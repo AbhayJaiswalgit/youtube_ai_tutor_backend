@@ -18,8 +18,8 @@ langchain-classic
 passlib[bcrypt] 
 pyjwt
 pydantic[email]
-passlib[bcrypt]==1.7.4
-bcrypt==4.0.1
+passlib[bcrypt]
+bcrypt
 pinecone-client
 langchain-pinecone
 pinecone
