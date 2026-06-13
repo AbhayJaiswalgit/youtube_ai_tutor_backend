@@ -136,92 +136,100 @@
 #                 audio_path.unlink()
 #             return None
 
-
-import sys
-import subprocess
 import os
+import glob
+import json
 from pathlib import Path
 from typing import List, Dict, Optional
-import whisper
-from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
 
 class YouTubeService:
     """
     Service class to handle all YouTube-related data fetching.
-    Uses Cookie Authentication to bypass Cloud/Datacenter IP bans.
+    Uses yt-dlp to bypass Cloud IP bans using cookies, extracting JSON3 transcripts.
     """
     
-    whisper_model = None
-
-    # Resolve the absolute path to the cookies file sitting in your backend root folder
+    # Path to the cookies file in the root backend directory
     COOKIE_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "youtube_cookies.txt"))
-
-    @classmethod
-    def get_whisper_model(cls):
-        """Lazy load the Whisper model only when we actually need it."""
-        if cls.whisper_model is None:
-            print("⏳ [WHISPER] Loading 'small' model into memory (this takes a moment)...")
-            cls.whisper_model = whisper.load_model("small")
-        return cls.whisper_model
 
     @staticmethod
     def fetch_transcript(video_id: str) -> Optional[List[Dict]]:
-        """Attempt to fetch via YouTube API first, fallback to Whisper if it fails."""
-        print(f"🔍 [YOUTUBE SERVICE] Attempting standard fetch for {video_id}...")
+        """Fetch transcripts entirely via yt-dlp to bypass datacenter IP blocks."""
+        print(f"🔍 [YOUTUBE SERVICE] Attempting yt-dlp transcript fetch for {video_id}...")
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
         
-        # 1. Check if cookies file exists to bypass IP Ban
-        kwargs = {}
+        # Temporary base filename for the subtitle download
+        sub_filename_base = f"{video_id}_subs"
+        
+        ydl_opts = {
+            'quiet': True,
+            'skip_download': True,              # NEVER download the video/audio (prevents FFmpeg crash)
+            'writesubtitles': True,             # Get manually created subtitles
+            'writeautomaticsub': True,          # Fallback to auto-generated subtitles
+            'subtitleslangs': ['en.*', 'en'],   # Target all English variants
+            'subtitlesformat': 'json3',         # Download as easy-to-parse JSON
+            'outtmpl': sub_filename_base,       # Output name (yt-dlp appends .en.json3)
+        }
+        
         if os.path.exists(YouTubeService.COOKIE_FILE_PATH):
-            print("🍪 [YOUTUBE SERVICE] Using Cookie Authentication to bypass IP Block.")
-            kwargs['cookies'] = YouTubeService.COOKIE_FILE_PATH
+            print("🍪 [YOUTUBE SERVICE] Injecting Cookies into yt-dlp...")
+            ydl_opts['cookiefile'] = YouTubeService.COOKIE_FILE_PATH
         else:
-            print("⚠️ [YOUTUBE SERVICE] No cookies file found. Render might get blocked by YouTube.")
+            print("⚠️ [YOUTUBE SERVICE] No cookies found. Render may block this request.")
 
         try:
-            # Note: list_transcripts is the correct static method syntax for passing cookies
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, **kwargs)
-            fetched_data = None
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+                
+            # yt-dlp creates a file like: EpZb7mnMHwQ_subs.en.json3
+            # We use glob to find it because the exact language code suffix might vary slightly
+            downloaded_files = glob.glob(f"{sub_filename_base}*.json3")
             
-            # 2. Try to find native English transcripts first
-            for t in transcript_list:
-                if t.language_code.startswith("en"):
-                    fetched = t.fetch()
-                    # The library changed slightly, handle both possible return types
-                    fetched_data = fetched if isinstance(fetched, list) else fetched.to_raw_data()
-                    break
+            if not downloaded_files:
+                print("⚠️ [YOUTUBE SERVICE] yt-dlp succeeded but no English subtitle file was generated.")
+                return None
+                
+            target_file = Path(downloaded_files[0])
             
-            # 3. If no native English exists, find the first translatable one
-            if not fetched_data:
-                for t in transcript_list:
-                    if t.is_translatable:
-                        print("⚠️ [YOUTUBE SERVICE] No native English found. Translating...")
-                        fetched = t.translate("en").fetch()
-                        fetched_data = fetched if isinstance(fetched, list) else fetched.to_raw_data()
-                        break
-            
-            if not fetched_data:
-                raise Exception("No English or translatable transcripts available.")
-            
-            # 4. Format it for our MongoDB / Pinecone database
+            with open(target_file, 'r', encoding='utf-8') as f:
+                sub_data = json.load(f)
+                
             formatted_transcript = []
-            for item in fetched_data:
-                start_time = float(item['start'])
-                duration = float(item['duration'])
+            
+            # Extract data from YouTube's native JSON3 format
+            for event in sub_data.get('events', []):
+                if 'segs' not in event:
+                    continue
+                    
+                text = "".join(seg.get('utf8', '') for seg in event['segs']).strip()
+                if not text or text == '\n':
+                    continue
+                    
+                start_time = event.get('tStartMs', 0) / 1000.0
+                duration = event.get('dDurationMs', 0) / 1000.0
+                
                 formatted_transcript.append({
-                    "text": item['text'].replace("\n", " "),
-                    "start_time": start_time,
+                    "text": text.replace("\n", " "),
+                    "start_time": round(start_time, 2),
                     "end_time": round(start_time + duration, 2)
                 })
                 
-            print(f"✅ [YOUTUBE SERVICE] Success! Fetched {len(formatted_transcript)} chunks natively.")
+            # Immediately delete the subtitle file so we don't fill up Render's disk
+            target_file.unlink()
+            
+            print(f"✅ [YOUTUBE SERVICE] Success! Extracted {len(formatted_transcript)} chunks natively.")
             return formatted_transcript
 
         except Exception as e:
-            print(f"⚠️ [YOUTUBE SERVICE] Native fetch failed: {e}")
-            print(f"🔄 [YOUTUBE SERVICE] Initiating Whisper STT Fallback Protocol...")
-            return YouTubeService.fallback_to_whisper(video_id)
-        
+            print(f"❌ [YOUTUBE SERVICE] Transcript fetch failed: {e}")
+            # Ensure cleanup if the script crashed midway
+            for p in glob.glob(f"{sub_filename_base}*"):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+            return None
+
     @staticmethod
     def get_video_metadata(video_id: str) -> dict:
         """Lightweight fetch of video title, duration, and thumbnail."""
@@ -233,7 +241,6 @@ class YouTubeService:
             'extract_flat': True, 
         }
         
-        # Inject cookies into yt-dlp to prevent metadata fetching from being IP blocked
         if os.path.exists(YouTubeService.COOKIE_FILE_PATH):
             ydl_opts['cookiefile'] = YouTubeService.COOKIE_FILE_PATH
 
@@ -248,46 +255,3 @@ class YouTubeService:
         except Exception as e:
             print(f"⚠️ [YOUTUBE SERVICE] Metadata fetch failed: {e}")
             return {"title": "Unknown Title", "duration": 0, "thumbnail": None}
-
-    @staticmethod
-    def fallback_to_whisper(video_id: str) -> Optional[List[Dict]]:
-        """Downloads audio and uses local AI to transcribe it."""
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-        audio_path = Path(f"{video_id}.webm")
-
-        try:
-            print(f"📥 [WHISPER] Downloading audio via yt-dlp...")
-            
-            # Pass cookies to subprocess yt-dlp
-            cmd = [sys.executable, "-m", "yt_dlp", "-f", "bestaudio"]
-            if os.path.exists(YouTubeService.COOKIE_FILE_PATH):
-                cmd.extend(["--cookies", YouTubeService.COOKIE_FILE_PATH])
-            cmd.extend(["-o", str(audio_path), video_url])
-            
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            print(f"🧠 [WHISPER] Transcribing audio... (This might take a few minutes)")
-            model = YouTubeService.get_whisper_model()
-            
-            result = model.transcribe(str(audio_path), fp16=False)
-            
-            formatted_transcript = []
-            for segment in result["segments"]:
-                formatted_transcript.append({
-                    "text": segment["text"].strip(),
-                    "start_time": round(segment["start"], 2),
-                    "end_time": round(segment["end"], 2)
-                })
-            
-            print(f"✅ [WHISPER] Transcription complete! Generated {len(formatted_transcript)} chunks.")
-            
-            if audio_path.exists():
-                audio_path.unlink()
-                
-            return formatted_transcript
-            
-        except Exception as e:
-            print(f"❌ [WHISPER] Fallback totally failed: {e}")
-            if audio_path.exists():
-                audio_path.unlink()
-            return None
