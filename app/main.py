@@ -23,7 +23,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",  # Your Vite Web App
         "http://localhost:3000",
-        "chrome-extension://*"    # Allows your future Chrome Extension
+        "chrome-extension://*" ,   # Allows your future Chrome Extension,
+        "https://your-deployed-frontend-url.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"], # <--- This explicitly fixes the OPTIONS 405 error!
