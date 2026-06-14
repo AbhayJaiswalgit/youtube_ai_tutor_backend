@@ -142,7 +142,6 @@ from app.core.config import settings
 
 # Adjust the import path below based on where your config file is located
 # (e.g., from app.core.config import settings)
-from config import settings 
 
 class YouTubeService:
     """
