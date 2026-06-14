@@ -137,88 +137,94 @@
 #             return None
 
 import os
-import requests
+import httpx
 from typing import List, Dict, Optional
 
 class YouTubeService:
     """
     Service class to handle all YouTube-related data fetching.
-    Uses a custom Google Apps Script microservice to bypass Render IP blocks 
-    using Google's own trusted infrastructure.
+    Uses Supadata API to completely bypass Render IP blocks.
+    Strictly text-based: No audio downloading or Whisper AI fallback.
     """
 
     @staticmethod
     def fetch_transcript(video_id: str) -> Optional[List[Dict]]:
-        print(f"🔍 [YOUTUBE SERVICE] Attempting GAS Proxy fetch for {video_id}...")
-
-        # Pull credentials from environment variables
-        apps_script_url = os.environ.get("APPS_SCRIPT_URL")
-        apps_script_token = os.environ.get("APPS_SCRIPT_TOKEN")
-
-        if not apps_script_url or not apps_script_token:
-            print("❌ [YOUTUBE SERVICE] Missing APPS_SCRIPT_URL or APPS_SCRIPT_TOKEN in env variables.")
+        print(f"🔍 [YOUTUBE SERVICE] Attempting Supadata API fetch for {video_id}...")
+        
+        api_key = os.environ.get("SUPADATA_KEY")
+        if not api_key:
+            print("❌ [YOUTUBE SERVICE] SUPADATA_KEY environment variable is missing.")
             return None
 
         try:
-            # Call our Google Apps Script Web App
-            response = requests.get(
-                apps_script_url,
-                params={
-                    "videoId": video_id,
-                    "lang": "en",
-                    "token": apps_script_token
-                },
-                timeout=20 # Give GAS time to scrape the page
-            )
+            # We explicitly omit "text=true" so Supadata returns an array of timestamped segments.
+            # This is CRITICAL so your Vector Database has start and end times for the AI to use!
+            with httpx.Client(timeout=30) as client:
+                r = client.get(
+                    "https://api.supadata.ai/v1/youtube/transcript",
+                    params={"videoId": video_id}, 
+                    headers={"x-api-key": api_key}
+                )
 
-            if response.status_code != 200:
-                print(f"⚠️ [YOUTUBE SERVICE] Proxy returned HTTP {response.status_code}")
+            if r.status_code != 200:
+                print(f"⚠️ [YOUTUBE SERVICE] Supadata API returned HTTP {r.status_code}: {r.text}")
                 return None
 
-            data = response.json()
+            data = r.json()
+            content = data.get("content")
 
-            if "error" in data:
-                print(f"⚠️ [YOUTUBE SERVICE] Proxy error: {data['error']}")
+            # If Supadata returns an empty transcript or video has no captions
+            if not content:
+                print("⚠️ [YOUTUBE SERVICE] No captions available for this video.")
                 return None
 
-            segments = data.get("segments", [])
-            if not segments:
-                print("⚠️ [YOUTUBE SERVICE] Proxy returned empty segments.")
-                return None
-
-            # Format it exactly how your Vector Store and MongoDB expect it
             formatted_transcript = []
-            for seg in segments:
-                start_time = float(seg["start"])
-                duration = float(seg["duration"])
-                
+            
+            # Parse the Supadata segment array into our RAG chunk format
+            if isinstance(content, list):
+                for item in content:
+                    start_time = float(item.get("offset", item.get("start", 0.0)))
+                    duration = float(item.get("duration", 0.0))
+                    
+                    formatted_transcript.append({
+                        "text": item.get("text", "").replace("\n", " ").strip(),
+                        "start_time": round(start_time, 2),
+                        "end_time": round(start_time + duration, 2)
+                    })
+            
+            # Fallback just in case the API forces a string response
+            elif isinstance(content, str):
                 formatted_transcript.append({
-                    "text": seg["text"],
-                    "start_time": round(start_time, 2),
-                    "end_time": round(start_time + duration, 2) # Translate duration to end_time
+                    "text": content.replace("\n", " ").strip(),
+                    "start_time": 0.0,
+                    "end_time": 0.0
                 })
 
-            print(f"✅ [YOUTUBE SERVICE] Success via Proxy! Extracted {len(formatted_transcript)} chunks.")
+            if not formatted_transcript:
+                return None
+
+            print(f"✅ [YOUTUBE SERVICE] Success! Fetched {len(formatted_transcript)} chunks.")
             return formatted_transcript
 
-        except requests.exceptions.RequestException as e:
-            print(f"❌ [YOUTUBE SERVICE] Proxy fetch failed: {e}")
+        except Exception as e:
+            print(f"❌ [YOUTUBE SERVICE] Transcript fetch crashed: {e}")
             return None
 
     @staticmethod
     def get_video_metadata(video_id: str) -> dict:
         """Lightweight fetch of video title and thumbnail using YouTube's official oEmbed API (Never blocked)."""
         print(f"🔍 [YOUTUBE SERVICE] Fetching metadata for {video_id}...")
-        
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         
         try:
-            res = requests.get(oembed_url, timeout=10)
+            with httpx.Client(timeout=10) as client:
+                res = client.get(oembed_url)
+            
             if res.status_code == 200:
                 data = res.json()
                 return {
                     "title": data.get("title", "Unknown Title"),
-                    "duration": 0, # oEmbed doesn't provide duration, but our RAG chunking doesn't require it
+                    "duration": 0, # Duration omitted as it's not strictly needed for RAG
                     "thumbnail": data.get("thumbnail_url", f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
                 }
         except Exception as e:
