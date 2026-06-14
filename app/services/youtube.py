@@ -136,9 +136,12 @@
 #                 audio_path.unlink()
 #             return None
 
-import os
 import httpx
 from typing import List, Dict, Optional
+
+# Adjust the import path below based on where your config file is located
+# (e.g., from app.core.config import settings)
+from config import settings 
 
 class YouTubeService:
     """
@@ -151,14 +154,15 @@ class YouTubeService:
     def fetch_transcript(video_id: str) -> Optional[List[Dict]]:
         print(f"🔍 [YOUTUBE SERVICE] Attempting Supadata API fetch for {video_id}...")
         
-        api_key = os.environ.get("SUPADATA_KEY")
+        # Retrieve the API key directly from the Pydantic Settings model
+        api_key = settings.SUPADATA_KEY
+        
         if not api_key:
-            print("❌ [YOUTUBE SERVICE] SUPADATA_KEY environment variable is missing.")
+            print("❌ [YOUTUBE SERVICE] SUPADATA_KEY is missing from settings.")
             return None
 
         try:
             # We explicitly omit "text=true" so Supadata returns an array of timestamped segments.
-            # This is CRITICAL so your Vector Database has start and end times for the AI to use!
             with httpx.Client(timeout=30) as client:
                 r = client.get(
                     "https://api.supadata.ai/v1/youtube/transcript",

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     MONGODB_URL: str
     DATABASE_NAME: str
+    SUPADATA_KEY:str
     
     # AI Keys
     HUGGINGFACE_API_KEY: Optional[str] = None
