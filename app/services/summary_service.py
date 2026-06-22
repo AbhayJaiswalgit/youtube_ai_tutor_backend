@@ -7,7 +7,7 @@ class SummaryService:
     def __init__(self):
         self.llm = ChatGroq(
             #model="llama-3.1-8b-instant",
-            model="groq/compound-mini",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.2, # Low temp for factual summaries
             api_key=settings.GROQ_API_KEY,
             max_retries=2,
