@@ -6,7 +6,8 @@ import asyncio
 class SummaryService:
     def __init__(self):
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
+            #model="llama-3.1-8b-instant",
+            model="groq/compound-mini",
             temperature=0.2, # Low temp for factual summaries
             api_key=settings.GROQ_API_KEY,
             max_retries=2,
