@@ -1,12 +1,13 @@
 import re
+import asyncio
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.schemas.video_schema import VideoProcessRequest
 from app.models.video import VideoInDB
 from app.core.database import get_database
 from app.services.youtube import YouTubeService
 from app.services.vector_store import VectorStoreService
-import asyncio
 from app.services.summary_service import SummaryService
+from app.utils.logger import logger
 
 router = APIRouter()
 
@@ -50,7 +51,7 @@ async def process_video_pipeline(video_id: str, db):
     """
     The actual background worker fetching real data and embedding it.
     """
-    print(f"⚙️ [BACKGROUND] Starting AI pipeline for video: {video_id}")
+    logger.info("Starting background AI pipeline for video: %s", video_id)
     collection = db["videos"]
     
     # 1. Fetch the real transcript
@@ -61,7 +62,7 @@ async def process_video_pipeline(video_id: str, db):
             {"youtube_id": video_id},
             {"$set": {"processing_status": "failed"}}
         )
-        print(f"🛑 [BACKGROUND] Pipeline failed: No transcript available.")
+        logger.warning("Background pipeline failed: no transcript available for %s", video_id)
         return
 
     # 2. Initialize our Vector Store Service and embed the data!
@@ -69,9 +70,9 @@ async def process_video_pipeline(video_id: str, db):
         vector_service = VectorStoreService()
         vector_result = vector_service.process_and_store(video_id, transcript_data)
 
-        # 3. Hierarchical Summarization Ingestion (NEW)
+        # 3. Hierarchical summarization from raw transcript segments.
         summary_service = SummaryService()
-        summaries = await summary_service.generate_hierarchical_summary(transcript_data)
+        summaries = await summary_service.generate_hierarchical_summary(transcript_data, video_id)
         
         # 3. Update the database status to completed
         await collection.update_one(
@@ -80,13 +81,13 @@ async def process_video_pipeline(video_id: str, db):
                 "processing_status": "completed",
                 "video_summary": summaries["video_summary"],
                 "section_summaries": summaries["section_summaries"],
-                "parent_sections": vector_result["parent_sections"]
+                "transcript_chunks": vector_result["transcript_chunks"],
             }}
         )
-        print(f"✅ [BACKGROUND] Finished processing video: {video_id}")
+        logger.info("Background processing completed for video: %s", video_id)
         
-    except Exception as e:
-        print(f"❌ [BACKGROUND] Embedding failed: {str(e)}")
+    except Exception:
+        logger.exception("Background processing failed for video: %s", video_id)
         await collection.update_one(
             {"youtube_id": video_id},
             {"$set": {"processing_status": "failed"}}
@@ -99,6 +100,7 @@ async def process_video(
     db = Depends(get_database)
 ):
     video_id = extract_youtube_id(request.url)
+    logger.info("Video process request received for URL: %s", request.url)
     if not video_id:
         raise HTTPException(status_code=400, detail="Invalid YouTube URL")
 
@@ -139,6 +141,7 @@ from fastapi import Path
 @router.get("/{video_id}", response_model=VideoInDB)
 async def get_video_status(video_id: str = Path(...), db = Depends(get_database)):
     """Allows the frontend to poll for the background processing status."""
+    logger.info("Video status requested for video_id: %s", video_id)
     video = await db["videos"].find_one({"youtube_id": video_id})
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")

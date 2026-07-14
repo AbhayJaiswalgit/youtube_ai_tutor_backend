@@ -4,13 +4,14 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from app.core.config import settings
 from app.schemas.notes_schema import NoteSection
+from app.utils.logger import logger
 
 class NotesService:
     def __init__(self):
         # Removed FAISS & HuggingFace completely. 
         # Lower temperature for strict factual notes.
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.1,
             api_key=settings.GROQ_API_KEY,
             max_retries=2,
@@ -18,7 +19,7 @@ class NotesService:
 
     # Note the new parameters: section_summaries and video_summary
     def generate_notes(self, video_id: str, note_type: str, section_summaries: list, video_summary: str) -> list:
-        print(f"🧠 [NOTES SERVICE] Generating {note_type} using DB summaries for {video_id}...")
+        logger.info("Generating notes of type %s for video: %s", note_type, video_id)
 
         # 1. Build a clean, chronological context from our MongoDB summaries
         if not section_summaries:
@@ -58,7 +59,7 @@ class NotesService:
             "context": context
         })
         
-        print("✅ [NOTES SERVICE] Notes generated successfully!")
+        logger.info("Notes generated successfully for video: %s", video_id)
         
         if isinstance(result, dict):
             return [result]

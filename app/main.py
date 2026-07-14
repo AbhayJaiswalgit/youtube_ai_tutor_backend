@@ -3,13 +3,16 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.api.routes import video,chat,auth,quiz,notes # <--- NEW IMPORT
+from app.utils.logger import logger
 from fastapi.middleware.cors import CORSMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Starting application lifespan.")
     await connect_to_mongo()
     yield
     await close_mongo_connection()
+    logger.info("Application shutdown complete.")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

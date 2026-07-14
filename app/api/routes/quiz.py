@@ -6,6 +6,7 @@ from app.services.quiz_service import QuizService
 from app.core.database import get_database
 from app.api.dependencies import get_current_user
 from bson import ObjectId
+from app.utils.logger import logger
 
 router = APIRouter()
 quiz_service = QuizService()
@@ -46,8 +47,9 @@ async def generate_quiz(
             questions=questions
         )
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error generating quiz for video: %s", request.video_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
     
 
 @router.get("/", response_model=list)

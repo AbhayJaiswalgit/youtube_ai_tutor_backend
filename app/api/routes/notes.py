@@ -6,6 +6,7 @@ from app.services.notes_service import NotesService
 from app.core.database import get_database
 from app.api.dependencies import get_current_user
 from bson import ObjectId
+from app.utils.logger import logger
 
 router = APIRouter()
 notes_service = NotesService()
@@ -46,8 +47,9 @@ async def generate_notes(
             content=content
         )
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error generating notes for video: %s", request.video_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
     
 
 

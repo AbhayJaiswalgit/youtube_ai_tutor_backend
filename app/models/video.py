@@ -20,10 +20,10 @@ class VideoInDB(VideoBase):
     processing_status: str = Field(default="pending") # pending, completed, failed
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    # NEW FIELDS FOR HIERARCHICAL SUMMARIES
+    # Generated artifacts
     video_summary: Optional[str] = None
     section_summaries: Optional[list] = None
-    parent_sections: Optional[list] = None
+    transcript_chunks: Optional[list] = None
 
     class Config:
         populate_by_name = True

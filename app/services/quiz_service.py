@@ -4,18 +4,19 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from app.core.config import settings
 from app.schemas.quiz_schema import QuizQuestion
+from app.utils.logger import logger
 
 class QuizService:
     def __init__(self):
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.3,
             api_key=settings.GROQ_API_KEY,
             max_retries=2,
         )
 
     def generate_quiz(self, video_id: str, difficulty: str, count: int, section_summaries: list) -> list:
-        print(f"🧠 [QUIZ SERVICE] Generating {count} {difficulty} questions using DB summaries...")
+        logger.info("Generating %d %s quiz questions for video: %s", count, difficulty, video_id)
 
         if not section_summaries:
             raise Exception("No summaries found in database. Please re-process the video.")
@@ -50,7 +51,7 @@ class QuizService:
             "context": context
         })
         
-        print("✅ [QUIZ SERVICE] Quiz generated successfully!")
+        logger.info("Quiz generated successfully for video: %s", video_id)
         
         if isinstance(result, dict):
             return [result]

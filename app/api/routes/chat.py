@@ -8,6 +8,7 @@ from app.core.database import get_database
 from app.schemas.chat_schema import ChatRequest, ChatResponse
 from app.services.chat_service import ChatService
 from app.services.query_intent import QueryIntentRouter
+from app.utils.logger import logger
 
 
 router = APIRouter()
@@ -25,6 +26,7 @@ async def ask_question(
     message_collection = db["messages"]
 
     session_id = request.session_id
+    logger.info("Chat request received for video %s session_id=%s user=%s", request.video_id, session_id, current_user.get("email", "unknown"))
 
     if session_id:
         try:
@@ -34,7 +36,8 @@ async def ask_question(
                 raise HTTPException(status_code=403, detail="Not authorized to access this chat")
 
             if session and session.get("video_id") != request.video_id:
-                print("[CHAT] Stale session_id for a different video. Creating a new session.")
+                logger.info("Stale session_id for a different video (%s vs %s). Creating a new session.", session.get("video_id"), request.video_id)
+                
                 session_id = None
         except HTTPException:
             raise
@@ -50,7 +53,7 @@ async def ask_question(
             }
         )
         session_id = str(new_session.inserted_id)
-        print(f"[CHAT] Created new chat session: {session_id} for video: {request.video_id}")
+        logger.info("Created new chat session %s for video: %s", session_id, request.video_id)
 
     past_messages = (
         await message_collection.find({"session_id": session_id})
@@ -69,28 +72,40 @@ async def ask_question(
     )
 
     intent = intent_router.classify(request.message)
-    print(f"[ROUTER] Intent: {intent.value}")
+    logger.debug("Classified intent for session %s: %s", session_id, intent.as_dict())
 
     video_doc = await db["videos"].find_one({"youtube_id": request.video_id})
-    ai_response = chat_service.get_summary_answer(video_doc, request.message, intent)
-
-    if not ai_response:
-        print("[ROUTER] Utilizing factual vector RAG.")
+    if intent.is_temporal:
         try:
-            ai_response = chat_service.get_answer(
+            ai_response = chat_service.get_temporal_answer(
                 video_doc=video_doc,
                 query=request.message,
                 chat_history=history,
+                intent=intent,
             )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        except Exception:
+            logger.exception("Error while computing temporal answer for video %s", request.video_id)
+            raise HTTPException(status_code=500, detail="Internal server error")
+    else:
+        ai_response = chat_service.get_summary_answer(video_doc, request.message, intent)
+
+    if not intent.is_temporal and not ai_response:
+        logger.debug("No summary answer; utilizing factual vector RAG for session: %s", session_id)
+        try:
+            ai_response = chat_service.get_answer(
+                video_doc=video_doc,
+                query=intent.clean_query or request.message,
+                chat_history=history,
+            )
+        except Exception:
+            logger.exception("Error while computing RAG answer for video %s", request.video_id)
+            raise HTTPException(status_code=500, detail="Internal server error")
 
     await message_collection.insert_one(
         {
             "session_id": session_id,
             "sender": "ai",
             "content": ai_response["answer"],
-            "citations": ai_response["citations"],
             "created_at": datetime.now(timezone.utc),
         }
     )
@@ -98,7 +113,6 @@ async def ask_question(
     return ChatResponse(
         session_id=session_id,
         answer=ai_response["answer"],
-        citations=ai_response["citations"],
     )
 
 

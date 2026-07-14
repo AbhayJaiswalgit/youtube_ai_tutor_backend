@@ -139,6 +139,7 @@
 import httpx
 from typing import List, Dict, Optional
 from app.core.config import settings
+from app.utils.logger import logger
 
 # Adjust the import path below based on where your config file is located
 # (e.g., from app.core.config import settings)
@@ -152,13 +153,13 @@ class YouTubeService:
 
     @staticmethod
     def fetch_transcript(video_id: str) -> Optional[List[Dict]]:
-        print(f"🔍 [YOUTUBE SERVICE] Attempting Supadata API fetch for {video_id}...")
+        logger.info("Attempting Supadata API fetch for %s", video_id)
         
         # Retrieve the API key directly from the Pydantic Settings model
         api_key = settings.SUPADATA_KEY
         
         if not api_key:
-            print("❌ [YOUTUBE SERVICE] SUPADATA_KEY is missing from settings.")
+            logger.error("SUPADATA_KEY is missing from settings.")
             return None
 
         try:
@@ -171,7 +172,7 @@ class YouTubeService:
                 )
 
             if r.status_code != 200:
-                print(f"⚠️ [YOUTUBE SERVICE] Supadata API returned HTTP {r.status_code}: {r.text}")
+                logger.warning("Supadata API returned HTTP %s: %s", r.status_code, r.text)
                 return None
 
             data = r.json()
@@ -179,16 +180,27 @@ class YouTubeService:
 
             # If Supadata returns an empty transcript or video has no captions
             if not content:
-                print("⚠️ [YOUTUBE SERVICE] No captions available for this video.")
+                logger.warning("No captions available for video: %s", video_id)
                 return None
 
             formatted_transcript = []
             
             # Parse the Supadata segment array into our RAG chunk format
             if isinstance(content, list):
+                raw_times = [
+                    float(item.get("offset", item.get("start", 0.0)))
+                    for item in content
+                    if item is not None
+                ]
+                use_millis = any(raw > 10000 for raw in raw_times)
+                if use_millis:
+                    logger.info("Normalizing Supadata transcript timestamps from milliseconds to seconds for video: %s", video_id)
+
                 for item in content:
-                    start_time = float(item.get("offset", item.get("start", 0.0)))
-                    duration = float(item.get("duration", 0.0))
+                    raw_start = float(item.get("offset", item.get("start", 0.0)))
+                    raw_duration = float(item.get("duration", 0.0))
+                    start_time = raw_start / 1000.0 if use_millis else raw_start
+                    duration = raw_duration / 1000.0 if use_millis else raw_duration
                     
                     formatted_transcript.append({
                         "text": item.get("text", "").replace("\n", " ").strip(),
@@ -207,17 +219,17 @@ class YouTubeService:
             if not formatted_transcript:
                 return None
 
-            print(f"✅ [YOUTUBE SERVICE] Success! Fetched {len(formatted_transcript)} chunks.")
+            logger.info("Fetched %d transcript chunks for video: %s", len(formatted_transcript), video_id)
             return formatted_transcript
 
-        except Exception as e:
-            print(f"❌ [YOUTUBE SERVICE] Transcript fetch crashed: {e}")
+        except Exception:
+            logger.exception("Transcript fetch crashed for video: %s", video_id)
             return None
 
     @staticmethod
     def get_video_metadata(video_id: str) -> dict:
         """Lightweight fetch of video title and thumbnail using YouTube's official oEmbed API (Never blocked)."""
-        print(f"🔍 [YOUTUBE SERVICE] Fetching metadata for {video_id}...")
+        logger.info("Fetching metadata for video: %s", video_id)
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         
         try:
@@ -231,7 +243,7 @@ class YouTubeService:
                     "duration": 0, # Duration omitted as it's not strictly needed for RAG
                     "thumbnail": data.get("thumbnail_url", f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
                 }
-        except Exception as e:
-            print(f"⚠️ [YOUTUBE SERVICE] Metadata fetch failed: {e}")
+        except Exception:
+            logger.exception("Metadata fetch failed for video: %s", video_id)
             
         return {"title": "Unknown Title", "duration": 0, "thumbnail": None}
