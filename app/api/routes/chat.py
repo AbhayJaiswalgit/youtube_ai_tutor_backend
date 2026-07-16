@@ -16,6 +16,42 @@ chat_service = ChatService()
 intent_router = QueryIntentRouter()
 
 
+async def _get_or_create_session(session_collection, request, current_user):
+    session_id = request.session_id
+    if not session_id:
+        return await _create_session(session_collection, request, current_user)
+
+    try:
+        session = await session_collection.find_one({"_id": ObjectId(session_id)})
+    except Exception:
+        return await _create_session(session_collection, request, current_user)
+
+    if not session:
+        return await _create_session(session_collection, request, current_user)
+
+    if session.get("user_id") != current_user["_id"]:
+        raise HTTPException(status_code=403, detail="Not authorized to access this chat")
+
+    if session.get("video_id") != request.video_id:
+        logger.info("Stale session_id for a different video (%s vs %s). Creating a new session.", session.get("video_id"), request.video_id)
+        return await _create_session(session_collection, request, current_user)
+
+    return str(session["_id"])
+
+
+async def _create_session(session_collection, request, current_user):
+    new_session = await session_collection.insert_one(
+        {
+            "video_id": request.video_id,
+            "user_id": current_user["_id"],
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+    session_id = str(new_session.inserted_id)
+    logger.info("Created new chat session %s for video: %s", session_id, request.video_id)
+    return session_id
+
+
 @router.post("/ask", response_model=ChatResponse)
 async def ask_question(
     request: ChatRequest,
@@ -25,42 +61,15 @@ async def ask_question(
     session_collection = db["chat_sessions"]
     message_collection = db["messages"]
 
-    session_id = request.session_id
+    session_id = await _get_or_create_session(session_collection, request, current_user)
     logger.info("Chat request received for video %s session_id=%s user=%s", request.video_id, session_id, current_user.get("email", "unknown"))
-
-    if session_id:
-        try:
-            session = await session_collection.find_one({"_id": ObjectId(session_id)})
-
-            if session and session.get("user_id") != current_user["_id"]:
-                raise HTTPException(status_code=403, detail="Not authorized to access this chat")
-
-            if session and session.get("video_id") != request.video_id:
-                logger.info("Stale session_id for a different video (%s vs %s). Creating a new session.", session.get("video_id"), request.video_id)
-                
-                session_id = None
-        except HTTPException:
-            raise
-        except Exception:
-            session_id = None
-
-    if not session_id:
-        new_session = await session_collection.insert_one(
-            {
-                "video_id": request.video_id,
-                "user_id": current_user["_id"],
-                "created_at": datetime.now(timezone.utc),
-            }
-        )
-        session_id = str(new_session.inserted_id)
-        logger.info("Created new chat session %s for video: %s", session_id, request.video_id)
 
     past_messages = (
         await message_collection.find({"session_id": session_id})
         .sort("created_at", 1)
         .to_list(length=100)
     )
-    history = [{"sender": m["sender"], "content": m["content"]} for m in past_messages]
+    history = [{"sender": message["sender"], "content": message["content"]} for message in past_messages]
 
     await message_collection.insert_one(
         {
@@ -75,31 +84,16 @@ async def ask_question(
     logger.debug("Classified intent for session %s: %s", session_id, intent.as_dict())
 
     video_doc = await db["videos"].find_one({"youtube_id": request.video_id})
-    if intent.is_temporal:
-        try:
-            ai_response = chat_service.get_temporal_answer(
-                video_doc=video_doc,
-                query=request.message,
-                chat_history=history,
-                intent=intent,
-            )
-        except Exception:
-            logger.exception("Error while computing temporal answer for video %s", request.video_id)
-            raise HTTPException(status_code=500, detail="Internal server error")
-    else:
-        ai_response = chat_service.get_summary_answer(video_doc, request.message, intent)
-
-    if not intent.is_temporal and not ai_response:
-        logger.debug("No summary answer; utilizing factual vector RAG for session: %s", session_id)
-        try:
-            ai_response = chat_service.get_answer(
-                video_doc=video_doc,
-                query=intent.clean_query or request.message,
-                chat_history=history,
-            )
-        except Exception:
-            logger.exception("Error while computing RAG answer for video %s", request.video_id)
-            raise HTTPException(status_code=500, detail="Internal server error")
+    try:
+        ai_response = chat_service.answer_query(
+            video_doc=video_doc,
+            query=intent.clean_query or request.message,
+            chat_history=history,
+            intent=intent,
+        )
+    except Exception:
+        logger.exception("Error while computing chat answer for video %s", request.video_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     await message_collection.insert_one(
         {
@@ -110,10 +104,7 @@ async def ask_question(
         }
     )
 
-    return ChatResponse(
-        session_id=session_id,
-        answer=ai_response["answer"],
-    )
+    return ChatResponse(session_id=session_id, answer=ai_response["answer"])
 
 
 @router.get("/sessions", response_model=list)
@@ -129,13 +120,9 @@ async def get_user_chat_sessions(
 
     for idx, session in enumerate(sessions):
         session["_id"] = str(session["_id"])
-
         video = await db["videos"].find_one({"youtube_id": session["video_id"]})
         title = video.get("title", "Unknown Video") if video else "Unknown Video"
-
-        seq_no = idx + 1
-        session["chat_name"] = f"{seq_no}_{title}"
-
+        session["chat_name"] = f"{idx + 1}_{title}"
         formatted_sessions.append(session)
 
     formatted_sessions.reverse()

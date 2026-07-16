@@ -18,9 +18,9 @@ class SummaryService:
             max_retries=2,
         )
         # Keep this aligned with VectorStoreService.
-        self.section_chunk_size = 40
-        self.section_concurrency = 2
-        self.token_budget_per_minute = 24000
+        self.section_chunk_size = 100
+        self.section_concurrency = 3
+        self.token_budget_per_minute = 35000
         self._token_lock = asyncio.Lock()
         self._rate_window_started = time.monotonic()
         self._rate_window_tokens = 0
@@ -127,6 +127,7 @@ class SummaryService:
                     self._rate_window_tokens += estimated_tokens
                     return
 
+                print("===============sleeping===========")
                 sleep_for = max(1, 60 - elapsed)
 
             await asyncio.sleep(sleep_for)
