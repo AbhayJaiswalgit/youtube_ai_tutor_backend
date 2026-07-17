@@ -51,13 +51,13 @@ class QueryIntentRouter:
     def __init__(self):
         self.llm: Optional[Any] =None
 
-    def classify(self, query: str) -> QueryIntentResult:
+    async def classify(self, query: str) -> QueryIntentResult:
         normalized = " ".join((query or "").strip().split())
         if not normalized:
             return QueryIntentResult(QueryIntent.RAG_QUERY, False, None, None, "")
 
         try:
-            result = self._classify_with_llm(normalized)
+            result = await self._classify_with_llm(normalized)
         except Exception:
             logger.exception("LLM query intent extraction failed; falling back to a safe result")
             result = QueryIntentResult(QueryIntent.RAG_QUERY, False, None, None, normalized)
@@ -65,7 +65,7 @@ class QueryIntentRouter:
         logger.debug("Query intent: %s", result.as_dict())
         return result
 
-    def _classify_with_llm(self, query: str) -> QueryIntentResult:
+    async def _classify_with_llm(self, query: str) -> QueryIntentResult:
         if self.llm is None:
             if ChatGroq is None:
                 raise RuntimeError("langchain_groq is not available")
@@ -77,7 +77,7 @@ class QueryIntentRouter:
             ).with_structured_output(IntentClassification)
 
         prompt = self._build_prompt(query)
-        response = self.llm.invoke(prompt)
+        response = await self.llm.ainvoke(prompt)
         payload = self._coerce_payload(response, fallback_query=query)
         return self._sanitize_result(payload, fallback_query=query)
 

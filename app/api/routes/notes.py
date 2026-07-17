@@ -19,13 +19,13 @@ async def generate_notes(
 ):
     try:
         # 1. Fetch the pre-generated summaries from MongoDB
-        video_doc = await db["videos"].find_one({"youtube_id": request.video_id})
+        video_doc = await db["videos"].find_one({"youtube_id": request.youtube_id})
         if not video_doc or not video_doc.get("section_summaries"):
             raise HTTPException(status_code=400, detail="Video summaries not ready. Please wait for processing to finish.")
 
         # 2. Generate structured notes via AI
-        content = notes_service.generate_notes(
-            video_id=request.video_id,
+        content = await notes_service.generate_notes(
+            video_id=request.youtube_id,
             note_type=request.note_type,
             section_summaries=video_doc.get("section_summaries"),
             video_summary=video_doc.get("video_summary", "")
@@ -34,7 +34,7 @@ async def generate_notes(
         # 3. Save to MongoDB (Leave this exactly as you have it)
         notes_document = {
             "user_id": current_user["_id"],
-            "video_id": request.video_id,
+            "youtube_id": request.youtube_id,
             "note_type": request.note_type,
             "content": content,
             "created_at": datetime.now(timezone.utc)
@@ -42,13 +42,13 @@ async def generate_notes(
         await db["notes"].insert_one(notes_document)
         
         return NotesResponse(
-            video_id=request.video_id,
+            video_id=request.youtube_id,
             note_type=request.note_type,
             content=content
         )
         
     except Exception:
-        logger.exception("Error generating notes for video: %s", request.video_id)
+        logger.exception("Error generating notes for video: %s", request.youtube_id)
         raise HTTPException(status_code=500, detail="Internal server error")
     
 
@@ -66,7 +66,7 @@ async def get_user_notes(
     grouped = {}
     for note in notes:
         note["_id"] = str(note["_id"])
-        vid = note["video_id"]
+        vid = note.get("youtube_id") or note.get("video_id")
         
         if vid not in grouped:
             video = await db["videos"].find_one({"youtube_id": vid})

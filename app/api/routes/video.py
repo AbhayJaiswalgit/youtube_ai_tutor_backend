@@ -1,5 +1,4 @@
 import re
-import asyncio
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.schemas.video_schema import VideoProcessRequest
 from app.models.video import VideoInDB
@@ -55,7 +54,7 @@ async def process_video_pipeline(video_id: str, db):
     collection = db["videos"]
     
     # 1. Fetch the real transcript
-    transcript_data = YouTubeService.fetch_transcript(video_id)
+    transcript_data = await YouTubeService.fetch_transcript(video_id)
     
     if not transcript_data:
         await collection.update_one(
@@ -68,7 +67,7 @@ async def process_video_pipeline(video_id: str, db):
     # 2. Initialize our Vector Store Service and embed the data!
     try:
         vector_service = VectorStoreService()
-        vector_result = vector_service.process_and_store(video_id, transcript_data)
+        vector_result = await vector_service.process_and_store(video_id, transcript_data)
 
         # 3. Hierarchical summarization from raw transcript segments.
         summary_service = SummaryService()
@@ -113,7 +112,7 @@ async def process_video(
         return existing_video
 
     # 2. Fetch real metadata asynchronously so we don't block the API
-    metadata = await asyncio.to_thread(YouTubeService.get_video_metadata, video_id)
+    metadata = await YouTubeService.get_video_metadata(video_id)
 
     # 3. Create a pending database entry with REAL data
     new_video = VideoInDB(

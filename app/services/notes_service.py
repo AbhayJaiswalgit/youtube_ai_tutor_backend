@@ -18,7 +18,7 @@ class NotesService:
         )
 
     # Note the new parameters: section_summaries and video_summary
-    def generate_notes(self, video_id: str, note_type: str, section_summaries: list, video_summary: str) -> list:
+    async def generate_notes(self, video_id: str, note_type: str, section_summaries: list, video_summary: str) -> list:
         logger.info("Generating notes of type %s for video: %s", note_type, video_id)
 
         # 1. Build a clean, chronological context from our MongoDB summaries
@@ -54,7 +54,7 @@ class NotesService:
 
         # 3. Execute
         chain = prompt | self.llm | parser
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "note_type": note_type,
             "context": context
         })

@@ -15,7 +15,7 @@ class QuizService:
             max_retries=2,
         )
 
-    def generate_quiz(self, video_id: str, difficulty: str, count: int, section_summaries: list) -> list:
+    async def generate_quiz(self, video_id: str, difficulty: str, count: int, section_summaries: list) -> list:
         logger.info("Generating %d %s quiz questions for video: %s", count, difficulty, video_id)
 
         if not section_summaries:
@@ -45,7 +45,7 @@ class QuizService:
         )
 
         chain = prompt | self.llm | parser
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "count": count,
             "difficulty": difficulty,
             "context": context

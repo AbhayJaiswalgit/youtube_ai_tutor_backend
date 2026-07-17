@@ -26,6 +26,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",  # Your Vite Web App
         "http://localhost:3000",
+        "chrome-extension://enllppjhjjpbkifcaeggjhkhobimpnjp",
         "chrome-extension://*" ,   # Allows your future Chrome Extension,
         "https://youtube-ai-tutor-frontend-web.vercel.app"
     ],

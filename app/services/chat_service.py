@@ -518,6 +518,7 @@
 #         return {"answer": "I don't know based on this video."}
 
 
+import asyncio
 from typing import Any, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -593,7 +594,7 @@ class ChatService:
     # Entry point / routing
     # ------------------------------------------------------------------
 
-    def answer_query(
+    async def answer_query(
         self,
         video_doc: Optional[dict],
         query: str,
@@ -622,7 +623,7 @@ class ChatService:
                     video_doc.get("youtube_id"),
                     query,
                 )
-                return self._generate_answer(video_doc, query, chat_history, summary_context, kind="summary")
+                return await self._generate_answer(video_doc, query, chat_history, summary_context, kind="summary")
             # No summary stored for this video - fall through to RAG below.
 
         if time_bounds is None and intent.is_temporal:
@@ -640,12 +641,12 @@ class ChatService:
             query,
             time_bounds,
         )
-        chunks = self.retrieve_context(video_doc, query, chat_history, time_bounds)
+        chunks = await self.retrieve_context(video_doc, query, chat_history, time_bounds)
         if not chunks:
             return self._unknown_answer()
 
         context = self._build_context_from_chunks(chunks)
-        return self._generate_answer(video_doc, query, chat_history, context, kind="transcript")
+        return await self._generate_answer(video_doc, query, chat_history, context, kind="transcript")
 
     # ------------------------------------------------------------------
     # Summary route
@@ -675,7 +676,7 @@ class ChatService:
     # RAG route: one linear pipeline instead of six scattered helpers
     # ------------------------------------------------------------------
 
-    def retrieve_context(
+    async def retrieve_context(
         self,
         video_doc: dict,
         query: str,
@@ -691,7 +692,7 @@ class ChatService:
         the time window if any -> dedupe by chunk index.
         """
         video_id = video_doc.get("youtube_id")
-        search_query = self._rewrite_query(query, chat_history)
+        search_query = await self._rewrite_query(query, chat_history)
 
         search_filter: dict[str, Any] = {"video_id": video_id}
         if time_bounds:
@@ -702,7 +703,7 @@ class ChatService:
                 search_filter["end_time"] = {"$lte": float(end_time)}
 
         logger.info("Retrieving vector results for video %s with filter=%s", video_id, search_filter)
-        child_docs = self._search_vector_store(search_query, search_filter)
+        child_docs = await self._search_vector_store(search_query, search_filter)
         if not child_docs:
             logger.warning("No vector retrieval results for video %s query=%s filter=%s", video_id, query, search_filter)
             return []
@@ -758,14 +759,20 @@ class ChatService:
         )
         return chunks
 
-    def _search_vector_store(self, query: str, search_filter: dict) -> list:
+    async def _search_vector_store(self, query: str, search_filter: dict) -> list:
         try:
-            return self.vector_store.max_marginal_relevance_search(query, k=12, fetch_k=24, filter=search_filter)
+            return await asyncio.to_thread(
+                self.vector_store.max_marginal_relevance_search,
+                query,
+                k=12,
+                fetch_k=24,
+                filter=search_filter,
+            )
         except Exception as exc:
             logger.warning("MMR retrieval failed: %s; falling back to similarity search", exc)
-            return self.vector_store.similarity_search(query, k=12, filter=search_filter)
+            return await asyncio.to_thread(self.vector_store.similarity_search, query, k=12, filter=search_filter)
 
-    def _rewrite_query(self, query: str, chat_history: list) -> str:
+    async def _rewrite_query(self, query: str, chat_history: list) -> str:
         """Ask the LLM to rewrite the query as standalone if it depends on prior context.
 
         Replaces a heuristic rule engine (follow-up phrase lists, prefix matching, word
@@ -784,7 +791,7 @@ class ChatService:
             "Return only the rewritten query, nothing else.\n\n"
             f"Conversation:\n{history_text}\n\nLatest message: {query}"
         )
-        response = self.llm.invoke(prompt)
+        response = await self.llm.ainvoke(prompt)
         rewritten = self._clean_text(response.content)
         if rewritten and rewritten != query:
             logger.info("Rewrote query for RAG retrieval: %s -> %s", query, rewritten)
@@ -794,7 +801,7 @@ class ChatService:
     # Answer generation
     # ------------------------------------------------------------------
 
-    def _generate_answer(
+    async def _generate_answer(
         self,
         video_doc: dict,
         query: str,
@@ -816,7 +823,7 @@ class ChatService:
         )
 
         logger.info("LLM answer context size=%d kind=%s video=%s", len(context), kind, video_doc.get("youtube_id"))
-        result = (prompt | self.llm).invoke(
+        result = await (prompt | self.llm).ainvoke(
             {
                 "context": context,
                 "chat_history": self._prepare_history(chat_history),

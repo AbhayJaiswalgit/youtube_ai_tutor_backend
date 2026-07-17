@@ -19,13 +19,13 @@ async def generate_quiz(
 ):
     try:
         # 1. Fetch the pre-generated summaries from MongoDB
-        video_doc = await db["videos"].find_one({"youtube_id": request.video_id})
+        video_doc = await db["videos"].find_one({"youtube_id": request.youtube_id})
         if not video_doc or not video_doc.get("section_summaries"):
             raise HTTPException(status_code=400, detail="Video summaries not ready. Please wait for processing to finish.")
 
         # 2. Generate the questions via AI
-        questions = quiz_service.generate_quiz(
-            video_id=request.video_id,
+        questions = await quiz_service.generate_quiz(
+            video_id=request.youtube_id,
             difficulty=request.difficulty,
             count=request.question_count,
             section_summaries=video_doc.get("section_summaries")
@@ -34,7 +34,7 @@ async def generate_quiz(
         # 3. Save to MongoDB (Leave this exactly as you have it)
         quiz_document = {
             "user_id": current_user["_id"],
-            "video_id": request.video_id,
+            "youtube_id": request.youtube_id,
             "difficulty": request.difficulty,
             "questions": questions,
             "created_at": datetime.now(timezone.utc)
@@ -42,13 +42,13 @@ async def generate_quiz(
         await db["quizzes"].insert_one(quiz_document)
         
         return QuizResponse(
-            video_id=request.video_id,
+            video_id=request.youtube_id,
             difficulty=request.difficulty,
             questions=questions
         )
         
     except Exception:
-        logger.exception("Error generating quiz for video: %s", request.video_id)
+        logger.exception("Error generating quiz for video: %s", request.youtube_id)
         raise HTTPException(status_code=500, detail="Internal server error")
     
 
@@ -64,7 +64,7 @@ async def get_user_quizzes(
     grouped = {}
     for quiz in quizzes:
         quiz["_id"] = str(quiz["_id"])
-        vid = quiz["video_id"]
+        vid = quiz.get("youtube_id") or quiz.get("video_id")
         
         if vid not in grouped:
             video = await db["videos"].find_one({"youtube_id": vid})

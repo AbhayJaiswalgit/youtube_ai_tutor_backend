@@ -152,7 +152,7 @@ class YouTubeService:
     """
 
     @staticmethod
-    def fetch_transcript(video_id: str) -> Optional[List[Dict]]:
+    async def fetch_transcript(video_id: str) -> Optional[List[Dict]]:
         logger.info("Attempting Supadata API fetch for %s", video_id)
         
         # Retrieve the API key directly from the Pydantic Settings model
@@ -164,8 +164,8 @@ class YouTubeService:
 
         try:
             # We explicitly omit "text=true" so Supadata returns an array of timestamped segments.
-            with httpx.Client(timeout=30) as client:
-                r = client.get(
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
                     "https://api.supadata.ai/v1/youtube/transcript",
                     params={"videoId": video_id}, 
                     headers={"x-api-key": api_key}
@@ -227,14 +227,14 @@ class YouTubeService:
             return None
 
     @staticmethod
-    def get_video_metadata(video_id: str) -> dict:
+    async def get_video_metadata(video_id: str) -> dict:
         """Lightweight fetch of video title and thumbnail using YouTube's official oEmbed API (Never blocked)."""
         logger.info("Fetching metadata for video: %s", video_id)
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         
         try:
-            with httpx.Client(timeout=10) as client:
-                res = client.get(oembed_url)
+            async with httpx.AsyncClient(timeout=10) as client:
+                res = await client.get(oembed_url)
             
             if res.status_code == 200:
                 data = res.json()

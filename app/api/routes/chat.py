@@ -32,8 +32,9 @@ async def _get_or_create_session(session_collection, request, current_user):
     if session.get("user_id") != current_user["_id"]:
         raise HTTPException(status_code=403, detail="Not authorized to access this chat")
 
-    if session.get("video_id") != request.video_id:
-        logger.info("Stale session_id for a different video (%s vs %s). Creating a new session.", session.get("video_id"), request.video_id)
+    existing_video_id = session.get("youtube_id") or session.get("video_id")
+    if existing_video_id != request.youtube_id:
+        logger.info("Stale session_id for a different video (%s vs %s). Creating a new session.", existing_video_id, request.youtube_id)
         return await _create_session(session_collection, request, current_user)
 
     return str(session["_id"])
@@ -42,13 +43,13 @@ async def _get_or_create_session(session_collection, request, current_user):
 async def _create_session(session_collection, request, current_user):
     new_session = await session_collection.insert_one(
         {
-            "video_id": request.video_id,
+            "youtube_id": request.youtube_id,
             "user_id": current_user["_id"],
             "created_at": datetime.now(timezone.utc),
         }
     )
     session_id = str(new_session.inserted_id)
-    logger.info("Created new chat session %s for video: %s", session_id, request.video_id)
+    logger.info("Created new chat session %s for video: %s", session_id, request.youtube_id)
     return session_id
 
 
@@ -62,7 +63,7 @@ async def ask_question(
     message_collection = db["messages"]
 
     session_id = await _get_or_create_session(session_collection, request, current_user)
-    logger.info("Chat request received for video %s session_id=%s user=%s", request.video_id, session_id, current_user.get("email", "unknown"))
+    logger.info("Chat request received for video %s session_id=%s user=%s", request.youtube_id, session_id, current_user.get("email", "unknown"))
 
     past_messages = (
         await message_collection.find({"session_id": session_id})
@@ -80,19 +81,19 @@ async def ask_question(
         }
     )
 
-    intent = intent_router.classify(request.message)
+    intent = await intent_router.classify(request.message)
     logger.debug("Classified intent for session %s: %s", session_id, intent.as_dict())
 
-    video_doc = await db["videos"].find_one({"youtube_id": request.video_id})
+    video_doc = await db["videos"].find_one({"youtube_id": request.youtube_id})
     try:
-        ai_response = chat_service.answer_query(
+        ai_response = await chat_service.answer_query(
             video_doc=video_doc,
             query=intent.clean_query or request.message,
             chat_history=history,
             intent=intent,
         )
     except Exception:
-        logger.exception("Error while computing chat answer for video %s", request.video_id)
+        logger.exception("Error while computing chat answer for video %s", request.youtube_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
     await message_collection.insert_one(
@@ -120,7 +121,8 @@ async def get_user_chat_sessions(
 
     for idx, session in enumerate(sessions):
         session["_id"] = str(session["_id"])
-        video = await db["videos"].find_one({"youtube_id": session["video_id"]})
+        session_youtube_id = session.get("youtube_id") or session.get("video_id")
+        video = await db["videos"].find_one({"youtube_id": session_youtube_id})
         title = video.get("title", "Unknown Video") if video else "Unknown Video"
         session["chat_name"] = f"{idx + 1}_{title}"
         formatted_sessions.append(session)
