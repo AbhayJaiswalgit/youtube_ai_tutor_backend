@@ -124,6 +124,7 @@ async def get_user_chat_sessions(
         session_youtube_id = session.get("youtube_id") or session.get("video_id")
         video = await db["videos"].find_one({"youtube_id": session_youtube_id})
         title = video.get("title", "Unknown Video") if video else "Unknown Video"
+        session["video_id"] = session_youtube_id
         session["chat_name"] = f"{idx + 1}_{title}"
         formatted_sessions.append(session)
 

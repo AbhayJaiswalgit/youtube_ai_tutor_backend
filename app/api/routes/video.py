@@ -1,5 +1,5 @@
 import re
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Path
 from app.schemas.video_schema import VideoProcessRequest
 from app.models.video import VideoInDB
 from app.core.database import get_database
@@ -14,6 +14,13 @@ def extract_youtube_id(url: str) -> str:
     """Helper function to extract the 11-character YouTube ID."""
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", str(url))
     return match.group(1) if match else None
+
+async def is_processing_cancelled(collection, video_id: str) -> bool:
+    video = await collection.find_one(
+        {"youtube_id": video_id},
+        {"processing_status": 1},
+    )
+    return bool(video and video.get("processing_status") == "cancelled")
 
 # async def mock_ai_pipeline(video_id: str, db):
 #     """
@@ -52,15 +59,24 @@ async def process_video_pipeline(video_id: str, db):
     """
     logger.info("Starting background AI pipeline for video: %s", video_id)
     collection = db["videos"]
+
+    if await is_processing_cancelled(collection, video_id):
+        logger.info("Skipping cancelled video pipeline before transcript fetch: %s", video_id)
+        return
     
     # 1. Fetch the real transcript
     transcript_data = await YouTubeService.fetch_transcript(video_id)
+
+    if await is_processing_cancelled(collection, video_id):
+        logger.info("Stopping cancelled video pipeline after transcript fetch: %s", video_id)
+        return
     
     if not transcript_data:
-        await collection.update_one(
-            {"youtube_id": video_id},
-            {"$set": {"processing_status": "failed"}}
-        )
+        if not await is_processing_cancelled(collection, video_id):
+            await collection.update_one(
+                {"youtube_id": video_id},
+                {"$set": {"processing_status": "failed"}}
+            )
         logger.warning("Background pipeline failed: no transcript available for %s", video_id)
         return
 
@@ -69,9 +85,17 @@ async def process_video_pipeline(video_id: str, db):
         vector_service = VectorStoreService()
         vector_result = await vector_service.process_and_store(video_id, transcript_data)
 
+        if await is_processing_cancelled(collection, video_id):
+            logger.info("Stopping cancelled video pipeline after vector storage: %s", video_id)
+            return
+
         # 3. Hierarchical summarization from raw transcript segments.
         summary_service = SummaryService()
         summaries = await summary_service.generate_hierarchical_summary(transcript_data, video_id)
+
+        if await is_processing_cancelled(collection, video_id):
+            logger.info("Stopping cancelled video pipeline after summary generation: %s", video_id)
+            return
         
         # 3. Update the database status to completed
         await collection.update_one(
@@ -87,10 +111,11 @@ async def process_video_pipeline(video_id: str, db):
         
     except Exception:
         logger.exception("Background processing failed for video: %s", video_id)
-        await collection.update_one(
-            {"youtube_id": video_id},
-            {"$set": {"processing_status": "failed"}}
-        )
+        if not await is_processing_cancelled(collection, video_id):
+            await collection.update_one(
+                {"youtube_id": video_id},
+                {"$set": {"processing_status": "failed"}}
+            )
 
 @router.post("/process", response_model=VideoInDB)
 async def process_video(
@@ -108,6 +133,29 @@ async def process_video(
     # 1. Check if video already exists (Cache Hit)
     existing_video = await collection.find_one({"youtube_id": video_id})
     if existing_video:
+        if existing_video.get("processing_status") in {"failed", "cancelled"}:
+            logger.info("Reprocessing cached %s video: %s", existing_video.get("processing_status"), video_id)
+            metadata = await YouTubeService.get_video_metadata(video_id)
+            await collection.update_one(
+                {"youtube_id": video_id},
+                {
+                    "$set": {
+                        "title": metadata["title"],
+                        "url": str(request.url),
+                        "duration": metadata["duration"],
+                        "thumbnail": metadata["thumbnail"],
+                        "processing_status": "pending",
+                    },
+                    "$unset": {
+                        "video_summary": "",
+                        "section_summaries": "",
+                        "transcript_chunks": "",
+                    },
+                },
+            )
+            background_tasks.add_task(process_video_pipeline, video_id, db)
+            existing_video = await collection.find_one({"youtube_id": video_id})
+
         existing_video["_id"] = str(existing_video["_id"])
         return existing_video
 
@@ -134,7 +182,26 @@ async def process_video(
     return new_video
 
 
-from fastapi import Path
+@router.post("/{video_id}/cancel")
+async def cancel_video_processing(video_id: str = Path(...), db = Depends(get_database)):
+    """Marks an active video pipeline as cancelled so the worker can stop cooperatively."""
+    collection = db["videos"]
+    result = await collection.update_one(
+        {"youtube_id": video_id, "processing_status": {"$in": ["pending", "processing"]}},
+        {"$set": {"processing_status": "cancelled"}},
+    )
+
+    if result.matched_count == 0:
+        video = await collection.find_one({"youtube_id": video_id})
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+        return {
+            "message": "No active processing task to cancel",
+            "processing_status": video.get("processing_status"),
+        }
+
+    logger.info("Cancellation requested for video: %s", video_id)
+    return {"message": "Processing cancellation requested", "processing_status": "cancelled"}
 
 # Add this below your existing /process endpoint
 @router.get("/{video_id}", response_model=VideoInDB)
