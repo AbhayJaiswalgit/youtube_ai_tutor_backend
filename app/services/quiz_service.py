@@ -1,6 +1,7 @@
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.core.config import settings
 from app.schemas.quiz_schema import QuizQuestion
@@ -8,12 +9,19 @@ from app.utils.logger import logger
 
 class QuizService:
     def __init__(self):
-        self.llm = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            temperature=0.3,
-            api_key=settings.GROQ_API_KEY,
-            max_retries=2,
-        )
+        # self.llm = ChatGroq(
+        #     model="meta-llama/llama-4-scout-17b-16e-instruct",
+        #     temperature=0.3,
+        #     api_key=settings.GROQ_API_KEY,
+        #     max_retries=2,
+        # )
+
+        self.llm = ChatGoogleGenerativeAI(
+                    model="gemini-3.1-flash-lite", 
+                    temperature=0.3,
+                    api_key=settings.GEMINI_API_KEY,
+                    max_retries=2,
+                )
 
     async def generate_quiz(self, video_id: str, difficulty: str, count: int, section_summaries: list) -> list:
         logger.info("Generating %d %s quiz questions for video: %s", count, difficulty, video_id)

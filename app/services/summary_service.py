@@ -6,21 +6,29 @@ from langchain_groq import ChatGroq
 
 from app.core.config import settings
 from app.utils.logger import logger
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 
 class SummaryService:
     def __init__(self):
-        self.llm = ChatGroq(
-            # model="llama-3.1-8b-instant",
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            temperature=0.2,  # Low temp for factual summaries
-            api_key=settings.GROQ_API_KEY,
-            max_retries=2,
-        )
+        # self.llm = ChatGroq(
+        #     # model="llama-3.1-8b-instant",
+        #     model="meta-llama/llama-4-scout-17b-16e-instruct",
+        #     temperature=0.2,  # Low temp for factual summaries
+        #     api_key=settings.GROQ_API_KEY,
+        #     max_retries=2,
+        # )
+
+        self.llm = ChatGoogleGenerativeAI(
+                            model="gemini-3.1-flash-lite", 
+                            temperature=0.2,
+                            api_key=settings.GEMINI_API_KEY,
+                            max_retries=2,
+                        )
         # Keep this aligned with VectorStoreService.
-        self.section_chunk_size = 100
-        self.section_concurrency = 3
-        self.token_budget_per_minute = 35000
+        self.section_chunk_size = 200
+        self.section_concurrency = 1
+        self.token_budget_per_minute = 200000
         self._token_lock = asyncio.Lock()
         self._rate_window_started = time.monotonic()
         self._rate_window_tokens = 0
@@ -65,9 +73,19 @@ class SummaryService:
 
         logger.info("Hierarchical summarization complete for video: %s", video_id)
 
+        raw_content = final_response.content
+
+        # Check if Gemini returned a list of blocks instead of a plain string
+        if isinstance(raw_content, list):
+            # Extract the text from the first dictionary in the list
+            text_content = raw_content[0].get("text", "") if isinstance(raw_content[0], dict) else str(raw_content[0])
+        else:
+            # Fallback for when the model returns a plain string
+            text_content = raw_content
+
         return {
             "section_summaries": section_summaries,
-            "video_summary": final_response.content.strip()
+            "video_summary": text_content.strip()
         }
 
     async def _summarize_section(
@@ -103,12 +121,22 @@ class SummaryService:
             await self._wait_for_token_budget(prompt)
             response = await self.llm.ainvoke(prompt)
 
+            raw_content = response.content
+
+            # Check if Gemini returned a list of blocks instead of a plain string
+            if isinstance(raw_content, list):
+                # Extract the text from the first dictionary in the list
+                text_content = raw_content[0].get("text", "") if isinstance(raw_content[0], dict) else str(raw_content[0])
+            else:
+                # Fallback for when the model returns a plain string
+                text_content = raw_content
+
             return {
                 "section_index": section_index,
                 "section_id": section_id,
                 "start_time": start_time,
                 "end_time": end_time,
-                "summary": response.content.strip()
+                "summary": text_content.strip()
             }
 
     async def _wait_for_token_budget(self, prompt: str) -> None:

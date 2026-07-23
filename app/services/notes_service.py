@@ -1,6 +1,7 @@
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.core.config import settings
 from app.schemas.notes_schema import NoteSection
@@ -10,10 +11,17 @@ class NotesService:
     def __init__(self):
         # Removed FAISS & HuggingFace completely. 
         # Lower temperature for strict factual notes.
-        self.llm = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+        # self.llm = ChatGroq(
+        #     model="meta-llama/llama-4-scout-17b-16e-instruct",
+        #     temperature=0.1,
+        #     api_key=settings.GROQ_API_KEY,
+        #     max_retries=2,
+        # )
+
+        self.llm = ChatGoogleGenerativeAI(
+            model="gemini-3.1-flash-lite", 
             temperature=0.1,
-            api_key=settings.GROQ_API_KEY,
+            api_key=settings.GEMINI_API_KEY,
             max_retries=2,
         )
 

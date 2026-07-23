@@ -8,8 +8,11 @@ class Settings(BaseSettings):
     MONGODB_URL: str
     DATABASE_NAME: str
     SUPADATA_KEY:str
+
+
     
     # AI Keys
+    GEMINI_API_KEY: str
     HUGGINGFACE_API_KEY: Optional[str] = None
     QWEN_API_KEY: Optional[str] = None
     # Inside your Settings class:
